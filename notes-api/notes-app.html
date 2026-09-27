@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notes App</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --border: #e2e4e8;
+    --text: #1f2328;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --danger: #dc2626;
+    --danger-hover: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px 16px 64px;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 0.85rem; margin-bottom: 20px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+    margin-bottom: 18px;
+  }
+  .card h2 { font-size: 1rem; margin: 0 0 12px; }
+  label { display: block; font-size: 0.8rem; color: var(--muted); margin: 10px 0 4px; }
+  input, textarea {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 60px; }
+  button {
+    margin-top: 12px;
+    padding: 8px 14px;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: white;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  button:hover { background: var(--accent-hover); }
+  button.danger { background: var(--danger); }
+  button.danger:hover { background: var(--danger-hover); }
+  button.secondary { background: #6b7280; }
+  button.secondary:hover { background: #4b5563; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .status { font-size: 0.8rem; margin-top: 10px; min-height: 1em; }
+  .status.error { color: var(--danger); }
+  .status.ok { color: #059669; }
+  .note {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+  }
+  .note h3 { margin: 0 0 4px; font-size: 0.95rem; }
+  .note p { margin: 0 0 8px; font-size: 0.85rem; color: #374151; white-space: pre-wrap; }
+  .note .meta { font-size: 0.7rem; color: var(--muted); margin-bottom: 8px; }
+  .hidden { display: none; }
+  .toggle-link { font-size: 0.75rem; color: var(--accent); cursor: pointer; text-decoration: underline; }
+  .empty { color: var(--muted); font-size: 0.85rem; text-align: center; padding: 20px 0; }
+  code { background: #eef0f3; padding: 1px 5px; border-radius: 4px; font-size: 0.85em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Notes App</h1>
+  <div class="sub">A small client for your serverless Notes API (Cognito + API Gateway + Lambda).</div>
+
+  <!-- Config -->
+  <div class="card" id="configCard">
+    <h2>1. Connection settings</h2>
+    <label for="apiUrl">API URL (from your stack's <code>ApiUrl</code> output)</label>
+    <input id="apiUrl" placeholder="https://xxxxx.execute-api.ap-south-1.amazonaws.com">
+    <label for="clientId">Cognito App Client ID (<code>UserPoolClientId</code> output)</label>
+    <input id="clientId" placeholder="4atjtqrsjjs9875c7qgkv5042s">
+    <label for="region">AWS Region</label>
+    <input id="region" placeholder="ap-south-1">
+    <button id="saveConfigBtn">Save settings</button>
+    <span class="toggle-link" id="editConfigLink" style="margin-left:10px;">edit</span>
+    <div class="status" id="configStatus"></div>
+  </div>
+
+  <!-- Login -->
+  <div class="card hidden" id="loginCard">
+    <h2>2. Sign in</h2>
+    <label for="email">Email</label>
+    <input id="email" type="email" placeholder="you@example.com">
+    <label for="password">Password</label>
+    <input id="password" type="password" placeholder="Your password">
+    <div class="row">
+      <button id="loginBtn">Sign in</button>
+    </div>
+    <div class="status" id="loginStatus"></div>
+  </div>
+
+  <!-- Notes -->
+  <div class="card hidden" id="notesCard">
+    <h2>3. New note</h2>
+    <label for="title">Title</label>
+    <input id="title" placeholder="Note title">
+    <label for="content">Content</label>
+    <textarea id="content" placeholder="Write something..."></textarea>
+    <div class="row">
+      <button id="createBtn">Add note</button>
+      <button class="secondary" id="refreshBtn">Refresh list</button>
+      <button class="secondary" id="logoutBtn">Sign out</button>
+    </div>
+    <div class="status" id="notesStatus"></div>
+  </div>
+
+  <div id="notesList"></div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const LS_KEY = "notesAppConfig";
+
+  function loadConfig() {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function saveConfig(cfg) {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {}
+  }
+
+  let config = loadConfig() || {};
+  let idToken = null;
+
+  function setStatus(el, msg, kind) {
+    el.textContent = msg || "";
+    el.className = "status" + (kind ? " " + kind : "");
+  }
+
+  function fillConfigInputs() {
+    $("apiUrl").value = config.apiUrl || "";
+    $("clientId").value = config.clientId || "";
+    $("region").value = config.region || "";
+  }
+
+  function showConfigForm(show) {
+    $("configCard").querySelectorAll("input, button#saveConfigBtn").forEach(el => {
+      el.classList.toggle("hidden", !show);
+    });
+    $("editConfigLink").classList.toggle("hidden", show);
+  }
+
+  function initConfigUI() {
+    fillConfigInputs();
+    const hasConfig = config.apiUrl && config.clientId && config.region;
+    showConfigForm(!hasConfig);
+    if (hasConfig) {
+      $("loginCard").classList.remove("hidden");
+    }
+  }
+
+  $("saveConfigBtn").addEventListener("click", () => {
+    const apiUrl = $("apiUrl").value.trim().replace(/\/$/, "");
+    const clientId = $("clientId").value.trim();
+    const region = $("region").value.trim();
+    if (!apiUrl || !clientId || !region) {
+      setStatus($("configStatus"), "Fill in all three fields.", "error");
+      return;
+    }
+    config = { apiUrl, clientId, region };
+    saveConfig(config);
+    setStatus($("configStatus"), "Saved.", "ok");
+    showConfigForm(false);
+    $("loginCard").classList.remove("hidden");
+  });
+
+  $("editConfigLink").addEventListener("click", () => showConfigForm(true));
+
+  // --- Cognito login (direct REST call, no SDK needed) ---
+  async function cognitoLogin(email, password) {
+    const endpoint = `https://cognito-idp.${config.region}.amazonaws.com/`;
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-amz-json-1.1",
+        "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth"
+      },
+      body: JSON.stringify({
+        AuthFlow: "USER_PASSWORD_AUTH",
+        ClientId: config.clientId,
+        AuthParameters: { USERNAME: email, PASSWORD: password }
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.message || data.__type || "Login failed");
+    }
+    return data.AuthenticationResult.IdToken;
+  }
+
+  $("loginBtn").addEventListener("click", async () => {
+    const email = $("email").value.trim();
+    const password = $("password").value;
+    if (!email || !password) {
+      setStatus($("loginStatus"), "Enter email and password.", "error");
+      return;
+    }
+    setStatus($("loginStatus"), "Signing in...");
+    $("loginBtn").disabled = true;
+    try {
+      idToken = await cognitoLogin(email, password);
+      setStatus($("loginStatus"), "Signed in.", "ok");
+      $("notesCard").classList.remove("hidden");
+      await loadNotes();
+    } catch (err) {
+      setStatus($("loginStatus"), err.message, "error");
+    } finally {
+      $("loginBtn").disabled = false;
+    }
+  });
+
+  $("logoutBtn").addEventListener("click", () => {
+    idToken = null;
+    $("notesCard").classList.add("hidden");
+    $("notesList").innerHTML = "";
+    setStatus($("loginStatus"), "Signed out.", "ok");
+  });
+
+  // --- API calls ---
+  async function apiFetch(path, options = {}) {
+    const res = await fetch(config.apiUrl + path, {
+      ...options,
+      headers: {
+        "Authorization": idToken,
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      }
+    });
+    if (res.status === 401) throw new Error("Unauthorized — sign in again (token may have expired).");
+    if (!res.ok && res.status !== 204) {
+      let msg = "Request failed (" + res.status + ")";
+      try { const j = await res.json(); msg = j.error || j.message || msg; } catch (e) {}
+      throw new Error(msg);
+    }
+    if (res.status === 204) return null;
+    return res.json();
+  }
+
+  async function loadNotes() {
+    setStatus($("notesStatus"), "Loading...");
+    try {
+      const notes = await apiFetch("/notes");
+      renderNotes(notes || []);
+      setStatus($("notesStatus"), "");
+    } catch (err) {
+      setStatus($("notesStatus"), err.message, "error");
+    }
+  }
+
+  function renderNotes(notes) {
+    const list = $("notesList");
+    if (!notes.length) {
+      list.innerHTML = '<div class="empty">No notes yet — add one above.</div>';
+      return;
+    }
+    notes.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    list.innerHTML = notes.map(n => {
+      const date = n.createdAt ? new Date(n.createdAt * 1000).toLocaleString() : "";
+      return `
+        <div class="note" data-id="${n.id}">
+          <h3>${escapeHtml(n.title || "")}</h3>
+          <div class="meta">${date}</div>
+          <p>${escapeHtml(n.content || "")}</p>
+          <button class="danger delete-btn" data-id="${n.id}">Delete</button>
+        </div>`;
+    }).join("");
+
+    list.querySelectorAll(".delete-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await apiFetch("/notes/" + btn.dataset.id, { method: "DELETE" });
+          await loadNotes();
+        } catch (err) {
+          setStatus($("notesStatus"), err.message, "error");
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  $("createBtn").addEventListener("click", async () => {
+    const title = $("title").value.trim();
+    const content = $("content").value.trim();
+    if (!title) {
+      setStatus($("notesStatus"), "Title is required.", "error");
+      return;
+    }
+    $("createBtn").disabled = true;
+    setStatus($("notesStatus"), "Saving...");
+    try {
+      await apiFetch("/notes", { method: "POST", body: JSON.stringify({ title, content }) });
+      $("title").value = "";
+      $("content").value = "";
+      await loadNotes();
+    } catch (err) {
+      setStatus($("notesStatus"), err.message, "error");
+    } finally {
+      $("createBtn").disabled = false;
+    }
+  });
+
+  $("refreshBtn").addEventListener("click", loadNotes);
+
+  initConfigUI();
+</script>
+</body>
+</html>
