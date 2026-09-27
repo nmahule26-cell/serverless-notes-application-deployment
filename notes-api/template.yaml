@@ -1,0 +1,119 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless notes API
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 10
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref NotesTable
+        BUCKET_NAME: !Ref AttachmentsBucket
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: notes-user-pool
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  NotesHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowHeaders: ["Authorization", "Content-Type"]
+        AllowMethods: ["GET", "POST", "DELETE", "OPTIONS"]
+      Auth:
+        DefaultAuthorizer: CognitoJwt
+        Authorizers:
+          CognitoJwt:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
+              audience:
+                - !Ref UserPoolClient
+
+  NotesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  AttachmentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  NotesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: notes/
+      Handler: app.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref NotesTable
+      Events:
+        Create:
+          Type: HttpApi
+          Properties: { ApiId: !Ref NotesHttpApi, Path: /notes, Method: POST }
+        List:
+          Type: HttpApi
+          Properties: { ApiId: !Ref NotesHttpApi, Path: /notes, Method: GET }
+        Get:
+          Type: HttpApi
+          Properties: { ApiId: !Ref NotesHttpApi, Path: '/notes/{id}', Method: GET }
+        Delete:
+          Type: HttpApi
+          Properties: { ApiId: !Ref NotesHttpApi, Path: '/notes/{id}', Method: DELETE }
+
+  UploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: upload/
+      Handler: app.handler
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref AttachmentsBucket
+      Events:
+        Upload:
+          Type: HttpApi
+          Properties: { ApiId: !Ref NotesHttpApi, Path: /upload, Method: POST }
+
+Outputs:
+  ApiUrl:
+    Value: !Sub "https://${NotesHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  TableName:
+    Value: !Ref NotesTable
+  BucketName:
+    Value: !Ref AttachmentsBucket
